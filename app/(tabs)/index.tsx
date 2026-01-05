@@ -1,98 +1,168 @@
 import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { Link } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Dimensions, FlatList, Pressable, StyleSheet } from 'react-native';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { fetchAnimeWallpapers, type WallpaperItem } from '@/lib/wallpapers';
+
+const { width } = Dimensions.get('window');
+const NUM_COLUMNS = 2;
+const GAP = 10;
+const TILE_SIZE = Math.floor((width - GAP * (NUM_COLUMNS + 1)) / NUM_COLUMNS);
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const [items, setItems] = useState<WallpaperItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
+  const abortRef = useRef<AbortController | null>(null);
+  const loadingMoreRef = useRef(false);
+
+  const load = useCallback(async (mode: 'initial' | 'refresh' | 'more') => {
+    if (loadingMoreRef.current && mode === 'more') return;
+    if (mode === 'initial') setLoading(true);
+    if (mode === 'refresh') setRefreshing(true);
+
+    setError(null);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    if (mode === 'more') loadingMoreRef.current = true;
+
+    try {
+      const next = await fetchAnimeWallpapers({
+        signal: controller.signal,
+        limit: 24,
+      });
+
+      setItems((prev) => {
+        if (mode === 'more') {
+          const seen = new Set(prev.map((p) => p.id));
+          const merged = [...prev];
+          for (const item of next) {
+            if (!seen.has(item.id)) merged.push(item);
+          }
+          return merged;
+        }
+        return next;
+      });
+    } catch (e) {
+      if ((e as any)?.name === 'AbortError') return;
+      setError((e as Error).message || 'Erro ao carregar wallpapers.');
+    } finally {
+      if (mode === 'initial') setLoading(false);
+      if (mode === 'refresh') setRefreshing(false);
+      if (mode === 'more') loadingMoreRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void load('initial');
+    return () => abortRef.current?.abort();
+  }, [load]);
+
+  const header = useMemo(() => {
+    return (
+      <ThemedView style={styles.header}>
+        <ThemedText type="title">Anime Wallpapers</ThemedText>
+        <ThemedText type="default" style={styles.subtitle}>
+          Toque em uma imagem para baixar ou definir.
         </ThemedText>
+        {error ? (
+          <ThemedText type="default" style={styles.error}>
+            {error}
+          </ThemedText>
+        ) : null}
       </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    );
+  }, [error]);
+
+  return (
+    <ThemedView style={styles.container}>
+      <FlatList
+        data={items}
+        keyExtractor={(item) => item.id}
+        numColumns={NUM_COLUMNS}
+        ListHeaderComponent={header}
+        contentContainerStyle={styles.listContent}
+        columnWrapperStyle={styles.column}
+        refreshing={refreshing}
+        onRefresh={() => load('refresh')}
+        onEndReachedThreshold={0.5}
+        onEndReached={() => load('more')}
+        renderItem={({ item }) => (
+          <Link
+            href={{
+              pathname: '/modal',
+              params: {
+                url: item.url,
+                previewUrl: item.previewUrl ?? item.url,
+                source: item.source ?? '',
+              },
+            }}
+            asChild>
+            <Pressable style={styles.tile}>
+              <Image
+                source={{ uri: item.previewUrl ?? item.url }}
+                style={styles.image}
+                contentFit="cover"
+                transition={150}
+              />
+            </Pressable>
+          </Link>
+        )}
+        ListEmptyComponent={
+          loading ? (
+            <ThemedText style={styles.empty}>Carregando...</ThemedText>
+          ) : (
+            <ThemedText style={styles.empty}>Sem imagens por enquanto.</ThemedText>
+          )
+        }
+      />
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: {
+    flex: 1,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  header: {
+    paddingTop: 18,
+    paddingHorizontal: GAP,
+    paddingBottom: 10,
+    gap: 6,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  subtitle: {
+    opacity: 0.8,
+  },
+  error: {
+    opacity: 0.9,
+  },
+  listContent: {
+    paddingBottom: 20,
+  },
+  column: {
+    paddingHorizontal: GAP,
+    gap: GAP,
+  },
+  tile: {
+    width: TILE_SIZE,
+    height: TILE_SIZE * 1.4,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: GAP,
+  },
+  image: {
+    width: '100%',
+    height: '100%',
+  },
+  empty: {
+    padding: 20,
+    textAlign: 'center',
   },
 });
